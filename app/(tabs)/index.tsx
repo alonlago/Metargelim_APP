@@ -28,6 +28,8 @@ const [step, setStep] = useState('grade');
 const [selectedGrade, setSelectedGrade] = useState('');
 const [selectedSubject, setSelectedSubject] = useState('');
 const [selectedSubCategory, setSelectedSubCategory] = useState('');
+const [grades, setGrades] = useState<string[]>([]);
+const [subjects, setSubjects] = useState<string[]>([]);
 const [subCategories, setSubCategories] = useState<string[]>([]);
 const [activeGameUrl, setActiveGameUrl] = useState<string | null>(null);
 const [games, setGames] = useState<any[]>([]);
@@ -96,13 +98,14 @@ const handleGoogleSignIn = () => {
 };
 
 const renderMenuButton = (title: string, onPress: () => void, color: string) => (
-  <TouchableOpacity key={title} style={[styles.card, { backgroundColor: color }]} onPress={onPress}>
+  <TouchableOpacity style={[styles.card, { backgroundColor: color }]} onPress={onPress}>
     <Text style={styles.cardText}>{title}</Text>
   </TouchableOpacity>
 );
 
 const handleBack = () => {
-  if (step === 'games') setStep('subCategory');
+  if (step === 'webview') setStep('games');
+  else if (step === 'games') setStep('subCategory');
   else if (step === 'subCategory') setStep('subject');
   else if (step === 'subject') setStep('grade');
   else setStep('grade');
@@ -111,31 +114,68 @@ const handleBack = () => {
 useEffect(() => {
   if (!user) return;
 
-  if (step === 'subCategory') {
-    setLoading(true);
-    // שליפת כל המשחקים המתאימים לכיתה ולמקצוע כדי לחלץ תת-קטגוריות
-    const q = query(collection(db, 'games'), where('grade', '==', selectedGrade), where('subject', '==', selectedSubject));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allGames = snapshot.docs.map(doc => doc.data());
-      console.log(`נמצאו ${allGames.length} משחקים עבור כיתה ${selectedGrade} במקצוע ${selectedSubject}`);
-      if (allGames.length > 0) console.log("דוגמה למשחק ראשון:", JSON.stringify(allGames[0], null, 2));
+  let unsubscribe = () => {};
 
-      // חילוץ רשימה ייחודית של subCategory
-      const uniqueSubCategories = [...new Set(allGames.map(g => g.subCategory).filter(Boolean))];
-      setSubCategories(uniqueSubCategories as string[]);
+  const handleError = (error: Error) => {
+    console.error("Firestore Snapshot Error: ", error);
+    // The error message from Firestore for missing indexes is very helpful, so we log it.
+    // For the user, a generic message is often better.
+    Alert.alert("שגיאה בטעינת נתונים", "אירעה שגיאה. ייתכן שנדרש אינדקס במסד הנתונים. בדוק את לוג השגיאות בקונסול.");
+    setLoading(false);
+  };
+
+  if (step === 'grade') {
+    setLoading(true);
+    const q = collection(db, 'games');
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      const allGames = snapshot.docs.map(doc => doc.data());
+      const uniqueGrades = [...new Set(allGames.map(g => g.grade).filter(Boolean))].sort() as string[];
+      setGrades(uniqueGrades);
       setLoading(false);
-    });
-    return () => unsubscribe();
+    }, handleError);
+  } else if (step === 'subject') {
+    setLoading(true);
+    const q = query(collection(db, 'games'), where('grade', '==', selectedGrade));
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      const allGames = snapshot.docs.map(doc => doc.data());
+      const uniqueSubjects = [...new Set(allGames.map(g => g.subject).filter(Boolean))].sort() as string[];
+      setSubjects(uniqueSubjects);
+      setLoading(false);
+    }, handleError);
+  } else if (step === 'subCategory') {
+    setLoading(true);
+    const q = query(collection(db, 'games'), where('grade', '==', selectedGrade), where('subject', '==', selectedSubject));
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      const allGames = snapshot.docs.map(doc => doc.data());
+      
+      if (allGames.length > 0) {
+        console.log("🔍 מבנה הנתונים של המשחק הראשון שנמצא:", Object.keys(allGames[0]));
+        console.log("📄 דוגמה לערכים:", JSON.stringify(allGames[0], null, 2));
+      }
+
+      // בדיקת כל הווריאציות האפשריות לשם השדה (כולל אותיות גדולות/קטנות)
+      const uniqueSubCategories = [...new Set(allGames.map(g => g.subCategory || g.SubCategory || g.subcategory || g.sub_category || g.category || g.SubCateory || g.subCateory).filter(Boolean))].sort() as string[];
+      setSubCategories(uniqueSubCategories);
+      setLoading(false);
+    }, handleError);
   } else if (step === 'games') {
     setLoading(true);
-    // שליפת המשחקים הסופית לפי כל הסינונים
-    const q = query(collection(db, 'games'), where('grade', '==', selectedGrade), where('subject', '==', selectedSubject), where('subCategory', '==', selectedSubCategory));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setGames(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    // שליפת כל המשחקים לפי כיתה ומקצוע, וסינון בזיכרון כדי להתגבר על שמות שדות לא אחידים (כמו SubCateory)
+    const q = query(collection(db, 'games'), where('grade', '==', selectedGrade), where('subject', '==', selectedSubject));
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      const allGames = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      const filteredGames = allGames.filter((g: any) => {
+        const category = g.subCategory || g.SubCategory || g.subcategory || g.sub_category || g.category || g.SubCateory || g.subCateory;
+        return category === selectedSubCategory;
+      });
+
+      setGames(filteredGames);
       setLoading(false);
-    });
-    return () => unsubscribe();
+    }, handleError);
   }
+
+  return () => unsubscribe();
 }, [step, user, selectedGrade, selectedSubject, selectedSubCategory]);
 
 if (initializing) return <View style={styles.centered}><ActivityIndicator size="large" color="#4ECDC4" /></View>;
@@ -205,25 +245,37 @@ return (
 <Text style={styles.header}>שלום {user?.email}</Text>
 
 {loading ? <ActivityIndicator size="large" color="#0000ff" style={{marginTop: 20}} /> : <>
-{step === 'grade' && <FlatList data={['א', 'ב', 'ג', 'ד', 'ה', 'ו']} keyExtractor={(item) => item} numColumns={2} renderItem={({item}) => (
+{step === 'grade' && <FlatList data={grades} keyExtractor={(item) => item} numColumns={2} 
+ListEmptyComponent={<Text style={{textAlign: 'center', fontSize: 18, marginTop: 20}}>לא נמצאו כיתות</Text>}
+renderItem={({item}) => (
 <TouchableOpacity style={[styles.card, {backgroundColor: '#4ECDC4'}]} onPress={() => {setSelectedGrade(item); setStep('subject');}}>
 <Text style={styles.cardText}>כיתה {item}</Text>
 </TouchableOpacity>
 )} />}
 
-{step === 'subject' && <View>{['שפה', 'חשבון', 'אנגלית'].map(sub => 
-  renderMenuButton(sub, () => { setSelectedSubject(sub); setStep('subCategory'); }, '#FF6B6B')
-)}</View>}
+{step === 'subject' && <FlatList data={subjects} keyExtractor={(item) => item} numColumns={2} 
+ListEmptyComponent={<Text style={{textAlign: 'center', fontSize: 18, marginTop: 20}}>לא נמצאו מקצועות</Text>}
+renderItem={({item}) => renderMenuButton(item, () => { setSelectedSubject(item); setStep('subCategory'); }, '#FF6B6B')} />}
 
 {step === 'subCategory' && <FlatList data={subCategories} keyExtractor={(item) => item} numColumns={2} 
   ListEmptyComponent={<Text style={{textAlign: 'center', fontSize: 18, marginTop: 20}}>לא נמצאו נושאים למקצוע זה</Text>}
-  renderItem={({item}) => 
-    renderMenuButton(item, () => { setSelectedSubCategory(item); setStep('games'); }, '#a55eea')
-  } />}
+  renderItem={({item}) => (
+    <TouchableOpacity style={[styles.card, {backgroundColor: '#a55eea'}]} onPress={() => { setSelectedSubCategory(item); setStep('games'); }}>
+      <Text style={styles.cardText}>{item}</Text>
+    </TouchableOpacity>
+  )} />}
 
 {step === 'games' && <FlatList data={games} keyExtractor={(item) => item.id} numColumns={2} renderItem={({item}) => (
-<TouchableOpacity style={[styles.card, {backgroundColor: '#FFD93D'}]} onPress={() => {setActiveGameUrl(item.url); setStep('webview');}}>
-<Text style={styles.cardText}>{item.title}</Text>
+<TouchableOpacity style={[styles.card, {backgroundColor: '#FFD93D'}]} onPress={() => {
+  const url = item.url || item.link || item.URL;
+  if (url) {
+    setActiveGameUrl(url); 
+    setStep('webview');
+  } else {
+    Alert.alert("שגיאה", "לא נמצא קישור למשחק זה");
+  }
+}}>
+<Text style={styles.cardText}>{item.title || item.name || "משחק ללא שם"}</Text>
 </TouchableOpacity>
 )} />}
 {step === 'webview' && <WebView source={{uri: activeGameUrl ?? ''}} style={{flex: 1}} />}</>}
